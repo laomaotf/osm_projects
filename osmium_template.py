@@ -3,24 +3,34 @@ import folium
 import geopandas as gpd
 import osmium
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 import json
 import warnings
 from typing import Any, Union, Optional
+import numpy as np
+
+
 
 osm_file = './data/planet_119.867_29.995_9f24ee25.osm'
 cache_osm_file = "./entities.json"
 lon, lat = 120.1417, 30.2458
 region_size = 0.05
+flag_save_node = True
+flag_save_way = True
+flag_save_relation = True
+
+type Member = dict(ref = 0, type ="", role ="")
 
 @dataclass
 class OSMEntity:
-    lon: float
-    lat: float
-    visible: bool
-    type: str
-    tags: dict[str, str]
-
+    id: np.int64 = 0
+    lon: float = -1
+    lat: float = -1
+    visible: bool = True
+    type: str = ""
+    tags: dict[str, str] = field(default_factory=dict[str,str])
+    refs: Optional[list[np.int64]] = None
+    members: Optional[list[Member]] = None
 
 ##
 #gdf = gpd.read_file(osm_file,
@@ -34,24 +44,31 @@ class OSMEntityExtractor(osmium.SimpleHandler):
         self.entities_all: list[OSMEntity] = []
 
     def node(self, n):
+        if not flag_save_node:
+            return
         tags: dict[str, str] = defaultdict(str)
         for tag in n.tags:
             tags[tag.k] = tag.v
-        entity = OSMEntity(lon=n.location.lon, lat=n.location.lat, visible=n.visible, tags=tags, type="node")
+        entity = OSMEntity(id=n.id, lon=n.location.lon, lat=n.location.lat, visible=n.visible, tags=tags, type="node")
         self.entities_all.append(entity)
 
     def way(self, w):
+        if not flag_save_way:
+            return 
         tags: dict[str, str] = defaultdict(str)
         for tag in w.tags:
             tags[tag.k] = tag.v
-        entity = OSMEntity(lon=-1, lat=-1, visible=w.visible, tags=tags, type="way")
+        entity = OSMEntity(id=w.id, lon=-1, lat=-1, visible=w.visible, tags=tags, type="way", refs=[n.ref for n in w.nodes])
         self.entities_all.append(entity)
 
     def relation(self, r):
+        if not flag_save_relation:
+            return
         tags: dict[str, str] = defaultdict(str)
         for tag in r.tags:
             tags[tag.k] = tag.v
-        entity = OSMEntity(lon=-1, lat=-1, visible=r.visible, tags=tags, type="relation")
+        entity = OSMEntity(id=r.id, lon=-1, lat=-1, visible=r.visible, tags=tags, type="relation",
+                           members=[dict(ref=m.ref, type=m.type, role=m.role) for m in r.members])
         self.entities_all.append(entity)
 
 
@@ -67,7 +84,7 @@ if not os.path.exists(cache_osm_file):
     class OSMEntityEncoder(json.JSONEncoder):
         def default(self, o):
             if isinstance(o, OSMEntity):
-                return dict(lon=o.lon, lat=o.lat, tags=o.tags, type=o.type, visible=o.visible, __type__="OSMEntity")
+                return dict(id=o.id, lon=o.lon, lat=o.lat, tags=o.tags, type=o.type, visible=o.visible, __type__="OSMEntity", refs=o.refs, members=o.members)
             return super().default(o)
     with open(cache_osm_file, 'w', encoding='utf-8') as f:
         json.dump(osm_entities_all, f, indent=4, cls=OSMEntityEncoder, ensure_ascii=False)
@@ -80,7 +97,9 @@ else:
 
         def object_hook(self, obj: dict[str, Any]) -> Any:
             if "__type__" in obj and obj["__type__"] == "OSMEntity":
-                return OSMEntity(lon=obj['lon'], lat=obj['lat'], type=obj['type'], tags=obj['tags'], visible=obj['visible'])
+                return OSMEntity(id=obj['id'], lon=obj['lon'], lat=obj['lat'], type=obj['type'], tags=obj['tags'],
+                                 visible=obj['visible'], refs=obj['refs'],
+                                 members=[dict(ref=m['ref'],type=m['type'],role=m['role']) for m in obj['members']] if obj['members'] is not None else None)
             return obj
     with open(cache_osm_file, "r", encoding='utf-8') as f:
         osm_entities_all = json.load(f, cls=OSMEntityDecoder)
